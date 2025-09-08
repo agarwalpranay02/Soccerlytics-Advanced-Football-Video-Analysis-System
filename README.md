@@ -46,20 +46,20 @@ Follow these instructions to get a copy of the project up and running on your lo
 ### Installation
 
 1.  *Clone the repository:*
-    bash
+    ```bash
     git clone [https://github.com/your-username/FootRec.git](https://github.com/your-username/FootRec.git)
     cd FootRec
     
 
 2.  *Create a virtual environment (recommended):*
-    bash
+    ```bash
     python -m venv venv
     source venv/bin/activate  # On Windows: venv\Scripts\activate
     
 
 3.  *Install the required dependencies:*
     *(You may need to create a requirements.txt file based on the imports in the script)*
-    bash
+    ```bash
     pip install opencv-python numpy pandas ultralytics supervision scikit-learn matplotlib
     
 
