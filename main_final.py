@@ -117,7 +117,7 @@ class Tracker:
         for i, frame in enumerate(frames):
             draw = frame.copy()
             
-            # Draw existing annotations
+            # Draw annotations
             for pid, player in tracks['players'][i].items():
                 color = player.get('team_color', (0, 0, 255))
                 draw = self._draw_ellipse(draw, player['bbox'], color, pid)
@@ -160,7 +160,7 @@ class Tracker:
         alpha = 0.4
         cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
         
-        # Convert control list to numpy array
+        # Calculate possession stats
         control_array = np.array(control)
         c1 = (control_array[:idx+1] == 1).sum()
         c2 = (control_array[:idx+1] == 2).sum()
@@ -171,7 +171,8 @@ class Tracker:
         cv2.putText(frame, f"Team 2 Ball Control: {p2:.2f}%", (1400, 950), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 3)
         return frame
 
-# The rest of the classes: TeamAssigner, PlayerBallAssigner, CameraMovementEstimator, ViewTransformer, and SpeedAndDistance_Estimator — are also included with renamed methods and fully rewritten below this block.
+# ----------------------------- TEAM ASSIGNMENT MODULE --------------------------------
+
 class TeamAssigner:
     def __init__(self):
         self.team_colors = {}
@@ -211,6 +212,8 @@ class TeamAssigner:
         self.player_team_dict[pid] = team
         return team
 
+# ----------------------------- BALL ASSIGNMENT MODULE --------------------------------
+
 class PlayerBallAssigner:
     def __init__(self):
         self.max_distance = 70
@@ -228,6 +231,8 @@ class PlayerBallAssigner:
                 closest = dist
                 assigned = pid
         return assigned
+
+# ----------------------------- CAMERA MOVEMENT MODULE --------------------------------
 
 class CameraMovementEstimator:
     def __init__(self, frame):
@@ -293,11 +298,10 @@ class CameraMovementEstimator:
             output.append(draw)
         return output
 
+# ----------------------------- VIEW TRANSFORMER MODULE --------------------------------
+
 class ViewTransformer:
     def __init__(self, source_points=None, target_points=None):
-        """
-        Initialize the ViewTransformer with source and target points.
-        """
         if source_points is not None and target_points is not None:
             if isinstance(source_points, list):
                 source_points = np.array(source_points, dtype=np.float32)
@@ -315,12 +319,11 @@ class ViewTransformer:
         else:
             self.homography_matrix = None
         
-        # Define default pitch dimensions (in pixels) for the 2D view
-        self.pitch_dims = (300, 200)  # width, height for the small view
-        self.pitch_real_dims = (105, 68)  # actual pitch dimensions in meters
+        # Pitch dimensions
+        self.pitch_dims = (400, 300)
+        self.pitch_real_dims = (105, 68)
 
     def transform_point(self, point):
-        """Transform a single point using the homography matrix."""
         if self.homography_matrix is None or point is None:
             return point
             
@@ -329,7 +332,6 @@ class ViewTransformer:
         return transformed_point.reshape(-1, 2)[0]
 
     def transform_points(self, points):
-        """Transform multiple points using the homography matrix."""
         if self.homography_matrix is None or len(points) == 0:
             return points
             
@@ -338,22 +340,17 @@ class ViewTransformer:
         return transformed_points.reshape(-1, 2)
 
     def create_2d_pitch_view(self, tracks, frame_idx):
-        """Create a 2D top-down view of the pitch with player and ball positions."""
-        # Create empty pitch image
         pitch = np.zeros((self.pitch_dims[1], self.pitch_dims[0], 3), dtype=np.uint8)
         
-        # Draw green background
+        # Background
         pitch[:, :] = (50, 180, 50)
         
-        # Draw pitch lines (white)
-        # Pitch outline
+        # Pitch lines
         cv2.rectangle(pitch, (10, 10), (self.pitch_dims[0]-10, self.pitch_dims[1]-10), (255, 255, 255), 1)
-        # Center line
         cv2.line(pitch, (self.pitch_dims[0]//2, 10), (self.pitch_dims[0]//2, self.pitch_dims[1]-10), (255, 255, 255), 1)
-        # Center circle
         cv2.circle(pitch, (self.pitch_dims[0]//2, self.pitch_dims[1]//2), 20, (255, 255, 255), 1)
         
-        # Scale factor from real dimensions to pixel dimensions
+        # Scale factors
         scale_x = (self.pitch_dims[0] - 20) / self.pitch_real_dims[0]
         scale_y = (self.pitch_dims[1] - 20) / self.pitch_real_dims[1]
         
@@ -368,7 +365,6 @@ class ViewTransformer:
                     continue
                     
                 pos = info['transformed_position']
-                # Convert from real coordinates to pixel coordinates
                 x = int(10 + pos[0] * scale_x)
                 y = int(10 + pos[1] * scale_y)
                 
@@ -376,7 +372,7 @@ class ViewTransformer:
                     continue
                 
                 if obj_type == 'ball':
-                    color = (0, 255, 255)  # Yellow for ball
+                    color = (0, 255, 255)
                     radius = 3
                 else:
                     color = info.get('team_color', (0, 0, 255))
@@ -390,7 +386,6 @@ class ViewTransformer:
         return pitch
 
     def add_transformed_position_to_tracks(self, tracks):
-        """Add transformed positions to all tracks."""
         for obj_type in tracks:
             for frame_tracks in tracks[obj_type]:
                 for track_id, info in frame_tracks.items():
@@ -398,30 +393,97 @@ class ViewTransformer:
                         info['transformed_position'] = self.transform_point(info['position'])
 
     def draw_2d_view_on_frame(self, frame, tracks, frame_idx):
-        """Draw the 2D view on the frame in a corner with semi-transparency."""
-        # Create 2D pitch view
         pitch_view = self.create_2d_pitch_view(tracks, frame_idx)
         
-        # Position for the 2D view (top-right corner)
-        x_offset = frame.shape[1] - self.pitch_dims[0] - 10
-        y_offset = 10
+        # Position at bottom center
+        x_offset = (frame.shape[1] - self.pitch_dims[0]) // 2
+        y_offset = frame.shape[0] - self.pitch_dims[1] - 10
         
-        # Create a subregion in the frame
         roi = frame[y_offset:y_offset + self.pitch_dims[1],
                    x_offset:x_offset + self.pitch_dims[0]]
         
-        # Add semi-transparent 2D view
-        cv2.addWeighted(pitch_view, 0.7, roi, 0.3, 0, roi)
+        cv2.addWeighted(pitch_view, 0.5, roi, 0.3, 0, roi)
         frame[y_offset:y_offset + self.pitch_dims[1],
               x_offset:x_offset + self.pitch_dims[0]] = roi
         
         return frame
 
+# ----------------------------- SPEED AND DISTANCE MODULE --------------------------------
+
 class SpeedAndDistance_Estimator:
     def __init__(self):
         self.frame_window = 5
         self.frame_rate = 24
+        # Store position history for each player
+        self.position_history = {}
+        # Store total distance for each player
+        self.total_distance = {}
+        # Store previous frame positions
+        self.prev_positions = {}
 
+    def update_speed_and_distance(self, frame_tracks):
+        """
+        Update speed and distance for players in real-time
+        """
+        current_positions = {}
+        
+        # Process players
+        if 'players' in frame_tracks:
+            for tid, info in frame_tracks['players'].items():
+                if 'transformed_position' not in info:
+                    continue
+                    
+                current_pos = info['transformed_position']
+                current_positions[tid] = current_pos
+                
+                # Initialize history if needed
+                if tid not in self.position_history:
+                    self.position_history[tid] = []
+                    self.total_distance[tid] = 0
+                
+                # Add current position to history
+                self.position_history[tid].append(current_pos)
+                
+                # Keep only the last frame_window positions
+                if len(self.position_history[tid]) > self.frame_window:
+                    self.position_history[tid].pop(0)
+                
+                # Calculate speed if we have enough history
+                if len(self.position_history[tid]) >= 2:
+                    # Get previous position from history
+                    prev_pos = self.position_history[tid][-2]
+                    
+                    # Calculate distance
+                    d = measure_distance(prev_pos, current_pos)
+                    self.total_distance[tid] += d
+                    
+                    # Calculate speed (km/h)
+                    t = 1 / self.frame_rate  # Time between frames
+                    speed = (d / t) * 3.6  # Convert to km/h
+                    
+                    # Add speed and distance to player info
+                    info['speed'] = speed
+                    info['distance'] = self.total_distance[tid]
+        
+        # Update previous positions
+        self.prev_positions = current_positions
+
+    def draw_speed_and_distance(self, frame, frame_tracks):
+        """
+        Draw speed and distance on the frame
+        """
+        if 'players' in frame_tracks:
+            for tid, info in frame_tracks['players'].items():
+                if 'speed' in info and 'bbox' in info:
+                    pos = get_foot_position(info['bbox'])
+                    pos = (int(pos[0]), int(pos[1] + 40))
+                    speed = info.get('speed')
+                    dist = info.get('distance')
+                    cv2.putText(frame, f"{speed:.2f} km/h", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
+                    cv2.putText(frame, f"{dist:.2f} m", (pos[0], pos[1] + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
+        return frame
+
+    # Keep the original method for batch processing if needed
     def add_speed_and_distance_to_tracks(self, tracks):
         total_distance = {}
         for obj, obj_tracks in tracks.items():
@@ -443,25 +505,10 @@ class SpeedAndDistance_Estimator:
                             obj_tracks[k][tid]['speed'] = speed
                             obj_tracks[k][tid]['distance'] = total_distance[obj][tid]
 
-    def draw_speed_and_distance(self, frames, tracks):
-        for i, frame in enumerate(frames):
-            for obj, obj_tracks in tracks.items():
-                if obj in ('ball', 'referees'): continue
-                for info in obj_tracks[i].values():
-                    if 'speed' in info:
-                        pos = get_foot_position(info['bbox'])
-                        pos = (int(pos[0]), int(pos[1] + 40))
-                        speed = info.get('speed')
-                        dist = info.get('distance')
-                        cv2.putText(frame, f"{speed:.2f} km/h", pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
-                        cv2.putText(frame, f"{dist:.2f} m", (pos[0], pos[1] + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2)
-        return frames
-
 # ----------------------------- MAIN FUNCTION --------------------------------
 
 def main():
-    # Read video - use absolute path or correct relative path to your video
-    video_path = "invd/test1.mp4"  # Replace with your actual video path
+    video_path = "invd/test1.mp4"
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"Error: Could not open video file {video_path}")
@@ -471,25 +518,25 @@ def main():
     tracker = Tracker("models/best.pt")
     team_assigner = TeamAssigner()
     ball_assigner = PlayerBallAssigner()
+    speed_distance_estimator = SpeedAndDistance_Estimator()
     
-    # Define source and target points for 2D projection
+    # 2D projection points
     source_points = np.array([
-        [100, 200],   # Top left corner of the pitch in camera view
-        [1820, 200],  # Top right corner
-        [0, 900],     # Bottom left corner
-        [1920, 900]   # Bottom right corner
+        [100, 200],
+        [1820, 200],
+        [0, 900],
+        [1920, 900]
     ], dtype=np.float32)
     
     target_points = np.array([
-        [0, 0],      # Top left
-        [105, 0],    # Top right
-        [0, 68],     # Bottom left
-        [105, 68]    # Bottom right
+        [0, 0],
+        [105, 0],
+        [0, 68],
+        [105, 68]
     ], dtype=np.float32)
     
     view_transformer = ViewTransformer(source_points, target_points)
 
-    # Initialize tracking dictionary
     tracks = {
         "players": [],
         "referees": [],
@@ -506,7 +553,7 @@ def main():
         if not ret:
             break
             
-        # Get detections for current frame
+        # Get detections
         detections = tracker.model.predict(frame, conf=0.1)[0]
         
         # Initialize frame tracks
@@ -543,12 +590,12 @@ def main():
             if cid == rev_map['ball']:
                 frame_tracks['ball'][1] = {'bbox': bbox}
 
-        # Initialize team colors on first frame with players
+        # Initialize team colors
         if not first_frame_processed and frame_tracks['players']:
             team_assigner.assign_team_color(frame, frame_tracks['players'])
             first_frame_processed = True
 
-        # Assign team colors to players
+        # Assign team colors
         if first_frame_processed:
             for pid, player in frame_tracks['players'].items():
                 team = team_assigner.get_player_team(frame, player['bbox'], pid)
@@ -562,12 +609,15 @@ def main():
                 info['position'] = pos
                 info['transformed_position'] = view_transformer.transform_point(pos)
         
+        # Update speed and distance in real-time
+        speed_distance_estimator.update_speed_and_distance(frame_tracks)
+        
         # Assign ball possession
         if frame_tracks['ball']:
             ball_bbox = frame_tracks['ball'][1]['bbox']
             possession = ball_assigner.assign_ball_to_player(frame_tracks['players'], ball_bbox)
-            if possession is not None and possession >= 0:  # Check for valid possession ID
-                if possession in frame_tracks['players']:  # Make sure the player exists
+            if possession is not None and possession >= 0:
+                if possession in frame_tracks['players']:
                     frame_tracks['players'][possession]['has_ball'] = True
                     team_control.append(team_assigner.player_team_dict.get(possession, 0))
                 else:
@@ -595,6 +645,9 @@ def main():
         for ball in frame_tracks['ball'].values():
             annotated_frame = tracker._draw_triangle(annotated_frame, ball['bbox'], (0, 255, 0))
         
+        # Draw speed and distance
+        annotated_frame = speed_distance_estimator.draw_speed_and_distance(annotated_frame, frame_tracks)
+        
         # Draw possession bar
         annotated_frame = tracker._draw_possession_bar(annotated_frame, frame_count, team_control)
         
@@ -606,14 +659,14 @@ def main():
         # Show progress
         print(f"\rProcessing frame {frame_count+1}", end="")
         
-        # Display the frame
-        cv2.imshow('FootRec', annotated_frame)
+        # Display frame
+        cv2.imshow('Football Analysis', annotated_frame)
         
-        # Wait for a small amount of time and check for 'q' key to quit
+        # Check for quit
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
             
-        # Update tracks history
+        # Update tracks
         tracks['players'].append(frame_tracks['players'])
         tracks['referees'].append(frame_tracks['referees'])
         tracks['ball'].append(frame_tracks['ball'])
